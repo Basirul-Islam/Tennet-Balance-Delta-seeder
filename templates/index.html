@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TenneT Balance Delta Seeder</title>
+<script>
+  // Applied before first paint so switching themes never shows a flash of the wrong one.
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("seeder-theme"); } catch (e) {}
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.setAttribute("data-theme", saved);
+    }
+  })();
+</script>
+<style>
+  /* Light is the base palette; dark is layered on top twice — once for the system preference
+     (skipped when the user has explicitly chosen light) and once for an explicit choice, so the
+     toggle wins in both directions. Every colour is a token: nothing below hardcodes one, or it
+     would survive the theme switch and break contrast in the other mode. */
+  :root {
+    color-scheme: light;
+    --bg:#f4f6f9; --panel:#ffffff; --panel2:#eaeff5; --line:#d3dce6;
+    --fg:#10161e; --dim:#5b6b7c;
+    --accent:#0b5fd0; --on-accent:#ffffff;
+    --ok:#1a7f37; --warn:#8a6100; --err:#c62828; --skip:#6f42c1;
+    --code-bg:#fbfcfe; --ts:#607285; --info:#0b5fd0; --progress:#46586b;
+    --tag-1:#0b5fd0; --tag-2:#116029;
+    --prod-fg:#b3261e; --shadow:0 8px 28px rgba(20,35,55,.16);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg:#0f1319; --panel:#161c26; --panel2:#1c2432; --line:#2a3444;
+      --fg:#e6edf5; --dim:#8ba0b4;
+      --accent:#4c9aff; --on-accent:#04101f;
+      --ok:#3fb950; --warn:#d29922; --err:#f85149; --skip:#a371f7;
+      --code-bg:#0b0f15; --ts:#75879b; --info:#9ecbff; --progress:#b9c6d4;
+      --tag-1:#9ecbff; --tag-2:#7ee787;
+      --prod-fg:#ffb4ad; --shadow:0 8px 28px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:#0f1319; --panel:#161c26; --panel2:#1c2432; --line:#2a3444;
+    --fg:#e6edf5; --dim:#8ba0b4;
+    --accent:#4c9aff; --on-accent:#04101f;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149; --skip:#a371f7;
+    --code-bg:#0b0f15; --ts:#75879b; --info:#9ecbff; --progress:#b9c6d4;
+    --tag-1:#9ecbff; --tag-2:#7ee787;
+    --prod-fg:#ffb4ad; --shadow:0 8px 28px rgba(0,0,0,.5);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 "Segoe UI",system-ui,sans-serif;
+         transition:background .15s ease, color .15s ease; }
+  header { padding:16px 22px; border-bottom:1px solid var(--line); background:var(--panel);
+           display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.2px; }
+  .sub { color:var(--dim); font-size:12px; }
+  main { padding:18px 22px 60px; max-width:1400px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+           padding:16px; margin-bottom:16px; }
+  .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  label.fld { display:flex; flex-direction:column; gap:5px; font-size:12px; color:var(--dim); }
+  select, input[type=text] { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+           border-radius:6px; padding:7px 10px; font:inherit; min-width:150px; }
+  select:disabled, input:disabled { opacity:.5; }
+  button { background:var(--accent); color:var(--on-accent); border:0; border-radius:6px;
+           padding:9px 18px; font:600 14px/1 inherit; cursor:pointer; }
+  button.ghost { background:var(--panel2); color:var(--fg); border:1px solid var(--line); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  #theme { padding:7px 12px; font-size:13px; display:inline-flex; align-items:center; gap:7px; }
+  #theme .glyph { font-size:14px; line-height:1; }
+  .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:20px;
+          font-size:12px; border:1px solid var(--line); background:var(--panel2); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--dim); }
+  .pill.ok .dot { background:var(--ok); } .pill.err .dot { background:var(--err); }
+  .pill.busy .dot { background:var(--warn); }
+  .prod-warn { border-color:var(--err) !important; color:var(--prod-fg); }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase;
+       letter-spacing:.6px; position:sticky; top:0; background:var(--panel); }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.st-synced td:first-child { box-shadow:inset 3px 0 var(--ok); }
+  tr.st-already_synced td:first-child { box-shadow:inset 3px 0 var(--warn); }
+  tr.st-partial td:first-child, tr.st-unexpected td:first-child,
+  tr.st-failed td:first-child { box-shadow:inset 3px 0 var(--err); }
+  tr.st-running td:first-child { box-shadow:inset 3px 0 var(--accent); }
+  .tag { font-size:11px; padding:2px 7px; border-radius:4px; background:var(--panel2);
+         border:1px solid var(--line); }
+  .tag.pt1m { color:var(--tag-1); } .tag.pt12s { color:var(--tag-2); }
+  .st { font-size:12px; }
+  .st.already_synced { color:var(--warn); } .st.synced { color:var(--ok); }
+  .st.partial,.st.unexpected,.st.failed { color:var(--err); }
+  .st.load { color:var(--dim); } .st.empty { color:var(--dim); }
+
+  #log { background:var(--code-bg); color:var(--fg); border:1px solid var(--line);
+         border-radius:8px; padding:12px; height:340px; overflow:auto;
+         font:12px/1.65 "Cascadia Mono",Consolas,monospace; white-space:pre-wrap; }
+  .l-info{color:var(--info);} .l-detail{color:var(--dim);} .l-progress{color:var(--progress);}
+  .l-ok{color:var(--ok);} .l-warn{color:var(--warn);} .l-error{color:var(--err);}
+  .l-skip{color:var(--skip);} .ts{color:var(--ts);}
+
+  .bar { height:8px; background:var(--panel2); border-radius:5px; overflow:hidden;
+         border:1px solid var(--line); }
+  .bar > i { display:block; height:100%; background:var(--accent); width:0; transition:width .2s; }
+
+  #toast { position:fixed; right:20px; bottom:20px; display:flex; flex-direction:column;
+           gap:10px; z-index:50; }
+  .toast { padding:12px 16px; border-radius:8px; border:1px solid var(--line);
+           background:var(--panel2); max-width:460px; box-shadow:var(--shadow); }
+  .toast.ok { border-color:var(--ok); } .toast.err { border-color:var(--err); }
+  .toast b { display:block; margin-bottom:3px; }
+  .toast .why { color:var(--dim); font-size:12px; }
+  .muted { color:var(--dim); }
+  .hint { color:var(--dim); font-size:12px; margin-top:8px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.7px; color:var(--dim);
+       margin:0 0 12px; font-weight:600; }
+  .scroll { max-height:420px; overflow:auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>TenneT Balance Delta — historical seeder</h1>
+  <span class="sub">destination table: {{ table }}</span>
+  <span class="sub" style="margin-left:auto">insert-only · no delete path</span>
+  <button class="ghost" id="theme" title="Switch between light and dark">
+    <span class="glyph" id="themeGlyph">◐</span><span id="themeLabel">Theme</span>
+  </button>
+</header>
+
+<main>
+
+<div class="panel">
+  <div class="row">
+    <label class="fld">Destination environment
+      <select id="env">
+        {% for e in environments %}
+        <option value="{{ e }}" {% if e == default_environment %}selected{% endif %}>{{ e }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label class="fld" id="confirmWrap" style="display:none">Type the phrase to confirm
+      <input type="text" id="confirm" placeholder="PROD" autocomplete="off">
+    </label>
+
+    <label class="fld">Batch size
+      <select id="batch">
+        {% for b in batch_sizes %}
+        <option value="{{ b }}" {% if b == default_batch %}selected{% endif %}>{{ "{:,}".format(b) }} rows</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <div style="margin-left:auto; display:flex; gap:10px; align-items:center">
+      <span class="pill" id="status"><i class="dot"></i><span id="statusText">Not connected</span></span>
+      <button class="ghost" id="rescan">Rescan files</button>
+      <button id="start" disabled>Start Sync</button>
+      <button class="ghost" id="stop" disabled>Stop</button>
+    </div>
+  </div>
+  <div class="hint" id="envNote"></div>
+</div>
+
+<div class="panel">
+  <h2>Source folder</h2>
+  <div class="row">
+    <input type="text" id="srcPath" spellcheck="false" autocomplete="off"
+           style="flex:1; min-width:340px" placeholder="Path to the folder holding the CSV exports">
+    <button class="ghost" id="browse">Browse…</button>
+    <button class="ghost" id="useSrc">Use this folder</button>
+    <button class="ghost" id="resetSrc" title="Back to the folder configured in config.py">Default</button>
+  </div>
+  <div class="hint" id="srcNote"></div>
+</div>
+
+<div class="panel">
+  <h2>Source files</h2>
+  <div class="scroll">
+    <table id="files">
+      <thead><tr>
+        <th><input type="checkbox" id="all"></th>
+        <th>Month</th><th>Res</th><th>File</th>
+        <th class="num">Rows in file</th>
+        <th>UTC range</th>
+        <th class="num">Rows in DB</th>
+        <th>Status</th>
+      </tr></thead>
+      <tbody><tr><td colspan="8" class="muted">Scanning…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="hint" id="filesNote"></div>
+</div>
+
+<div class="panel">
+  <h2>Progress</h2>
+  <div class="bar"><i id="barFill"></i></div>
+  <div class="hint" id="progressText">Idle.</div>
+</div>
+
+<div class="panel">
+  <h2>Monitoring log</h2>
+  <div id="log"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="ghost" id="copy">Copy log</button>
+    <button class="ghost" id="clear">Clear</button>
+  </div>
+</div>
+
+<div class="panel" id="summaryPanel" style="display:none">
+  <h2>Summary</h2>
+  <table id="summary">
+    <thead><tr><th>Month</th><th>Status</th><th class="num">Read</th>
+      <th class="num">Loaded</th><th class="num">Verified</th><th>Detail</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => (n === null || n === undefined) ? "—" : Number(n).toLocaleString();
+
+let connected = false;
+let running = false;
+let filesData = [];
+let envMeta = {};
+
+function toast(kind, title, why) {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.innerHTML = `<b></b><span class="why"></span>`;
+  el.querySelector("b").textContent = title;
+  el.querySelector(".why").textContent = why || "";
+  $("#toast").appendChild(el);
+  setTimeout(() => el.remove(), kind === "err" ? 12000 : 5000);
+}
+
+function setStatus(cls, text) {
+  const pill = $("#status");
+  pill.className = "pill " + cls;
+  $("#statusText").textContent = text;
+}
+
+function refreshStartEnabled() {
+  const env = $("#env").value;
+  const meta = envMeta[env] || {};
+  const needsPhrase = !!meta.requires_confirm;
+  const phraseOk = !needsPhrase || $("#confirm").value.trim() === (meta.confirm_phrase || "");
+  const anySelected = [...document.querySelectorAll(".pick:checked")].length > 0;
+  $("#start").disabled = !(connected && phraseOk && anySelected && !running);
+  $("#stop").disabled = !running;
+}
+
+async function loadEnvMeta() {
+  const res = await (await fetch("/api/environments")).json();
+  (res.environments || []).forEach(e => envMeta[e.name] = e);
+
+  // A missing secrets file is a normal first-run state, not a failure — but it has to be visible,
+  // or "where did DEV and PROD go?" turns into a hunt.
+  const s = res.secrets || {};
+  if (s.error) {
+    toast("err", "Problem reading the secrets file", s.error);
+  } else if (s.only_builtin) {
+    toast("err", "Only Local is available",
+          `No environments were loaded from ${s.file}. Copy secrets.example.json to ${s.file} `
+          + "and fill it in to add DEV / PROD.");
+  }
+}
+
+async function connect() {
+  const env = $("#env").value;
+  connected = false;
+  $("#start").disabled = true;
+  setStatus("busy", "Connecting to " + env + "…");
+  $("#envNote").textContent = (envMeta[env] || {}).note || "";
+
+  const meta = envMeta[env] || {};
+  $("#confirmWrap").style.display = meta.requires_confirm ? "" : "none";
+  $("#confirm").placeholder = meta.confirm_phrase || "";
+  $("#confirm").value = "";
+  document.body.classList.toggle("prod", env === "PROD");
+  $("#status").classList.toggle("prod-warn", env === "PROD");
+
+  let res;
+  try {
+    res = await (await fetch("/api/connect", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({environment: env})
+    })).json();
+  } catch (e) {
+    setStatus("err", "Couldn't connect the db");
+    toast("err", "Couldn't connect the db", String(e));
+    refreshStartEnabled(); loadFiles(); return;
+  }
+
+  if (!res.ok) {
+    setStatus("err", "Couldn't connect the db");
+    toast("err", "Couldn't connect the db", res.error);
+    connected = false;
+    refreshStartEnabled();
+    loadFiles();
+    return;
+  }
+
+  connected = true;
+  setStatus("ok", `${env} · ${res.host}:${res.mysql_port} · ${res.database} · ${fmt(res.table_rows)} rows`);
+  toast("ok", "Destination DB connected",
+        `${res.database}.${"{{ table }}"} holds ${fmt(res.table_rows)} rows`
+        + (res.min_start ? ` (${res.min_start} → ${res.max_start})` : " (empty)"));
+  if (res.can_insert === false) {
+    toast("err", "This login looks read-only",
+          "SHOW GRANTS names SELECT but nothing that implies writing. The first batch will fail "
+          + "if the INSERT grant is genuinely missing.");
+  }
+  refreshStartEnabled();
+  loadFiles();
+}
+
+function verdictLabel(v, dbCount, rows) {
+  switch (v) {
+    case "load": return ["load", "Not synced — will load"];
+    case "already_synced": return ["already_synced", "Already synced — will skip"];
+    case "partial": return ["partial", `Partial — ${fmt(dbCount)} of ${fmt(rows)}`];
+    case "unexpected": return ["unexpected", `Unexpected — ${fmt(dbCount)} present`];
+    case "empty": return ["empty", "No data rows"];
+    default: return ["load", "—"];
+  }
+}
+
+async function loadFiles(refresh) {
+  const env = connected ? $("#env").value : "";
+  const tbody = $("#files tbody");
+  tbody.innerHTML = `<tr><td colspan="8" class="muted">Scanning…</td></tr>`;
+  const res = await (await fetch(`/api/files?environment=${encodeURIComponent(env)}&refresh=${refresh ? 1 : 0}`)).json();
+  if (!res.ok) {
+    tbody.innerHTML = `<tr><td colspan="8" class="l-error">${res.error}</td></tr>`;
+    return;
+  }
+  filesData = res.files;
+  tbody.innerHTML = "";
+  for (const f of res.files) {
+    const tr = document.createElement("tr");
+    tr.dataset.month = f.month;
+    const [cls, text] = f.error
+      ? ["failed", f.error]
+      : verdictLabel(f.verdict, f.db_count, f.row_count);
+    const selectable = !f.error && f.row_count > 0;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="pick" ${selectable ? "checked" : "disabled"}></td>
+      <td>${f.month}</td>
+      <td><span class="tag ${(f.resolution||"").toLowerCase()}">${f.resolution || "—"}</span></td>
+      <td class="muted" title="${f.filename}">${f.filename}</td>
+      <td class="num">${fmt(f.row_count)}</td>
+      <td class="muted">${f.utc_min ? f.utc_min + " → " + f.utc_max : "—"}</td>
+      <td class="num">${f.db_count === null ? "—" : fmt(f.db_count)}</td>
+      <td class="st ${cls}">${text}</td>`;
+    tbody.appendChild(tr);
+  }
+  const withMari = res.files.filter(f => f.has_mari).length;
+  const folds = res.files.reduce((a, f) => a + (f.index_label_mismatches || 0), 0);
+  $("#filesNote").textContent =
+    `${res.files.length} file(s), ${fmt(res.total_rows)} rows. `
+    + `${withMari} carry the Mari columns, ${res.files.length - withMari} do not (NULL is written). `
+    + `${folds} row(s) sit inside a DST fold and are placed from the Isp index.`;
+  document.querySelectorAll(".pick").forEach(c => c.addEventListener("change", refreshStartEnabled));
+  refreshStartEnabled();
+}
+
+function setRowStatus(month, status, text) {
+  const tr = [...document.querySelectorAll("#files tbody tr")].find(r => r.dataset.month === month);
+  if (!tr) return;
+  tr.className = "st-" + status;
+  if (text) { const c = tr.querySelector(".st"); c.className = "st " + status; c.textContent = text; }
+}
+
+// ── live log ───────────────────────────────────────────────────────────────────────
+const logEl = $("#log");
+function appendLog(ev) {
+  if (!ev.message) return;
+  const line = document.createElement("div");
+  line.className = "l-" + (ev.level || "info");
+  line.innerHTML = `<span class="ts">[${ev.ts}]</span> `;
+  line.appendChild(document.createTextNode(ev.message));
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function renderSummary(rows) {
+  const tb = $("#summary tbody");
+  tb.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.month}</td><td>${r.status}</td>
+      <td class="num">${fmt(r.read)}</td><td class="num">${fmt(r.loaded)}</td>
+      <td class="num">${fmt(r.verified)}</td>
+      <td class="muted" style="white-space:pre-wrap">${r.detail || ""}</td>`;
+    tb.appendChild(tr);
+  }
+  $("#summaryPanel").style.display = rows.length ? "" : "none";
+}
+
+const es = new EventSource("/api/stream");
+es.onmessage = e => {
+  const ev = JSON.parse(e.data);
+  if (ev.level === "summary") { renderSummary(ev.summary || []); return; }
+  if (ev.level === "state")   { running = !!ev.active; refreshStartEnabled(); return; }
+
+  appendLog(ev);
+  if (ev.month && ev.status) setRowStatus(ev.month, ev.status, null);
+
+  if (ev.overall_total) {
+    const pct = Math.min(100, 100 * (ev.overall_loaded || 0) / ev.overall_total);
+    $("#barFill").style.width = pct + "%";
+    $("#progressText").textContent =
+      `${fmt(ev.overall_loaded || 0)} / ${fmt(ev.overall_total)} rows`
+      + (ev.month ? ` · ${ev.month}` : "");
+  }
+  if (ev.done) {
+    running = false; refreshStartEnabled();
+    $("#progressText").textContent += "  — finished";
+    loadFiles();
+  }
+};
+
+// ── theme ──────────────────────────────────────────────────────────────────────────
+// Three states: explicit light, explicit dark, or unset (follow the OS). The toggle only ever
+// writes an explicit value, so once the user has chosen, the OS no longer overrides them.
+function systemPrefersDark() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme")
+      || (systemPrefersDark() ? "dark" : "light");
+}
+function paintThemeButton() {
+  const dark = currentTheme() === "dark";
+  $("#themeGlyph").textContent = dark ? "☀" : "☽";
+  $("#themeLabel").textContent = dark ? "Light" : "Dark";
+  $("#theme").title = dark ? "Switch to the light theme" : "Switch to the dark theme";
+}
+$("#theme").addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("seeder-theme", next); } catch (e) {}
+  paintThemeButton();
+});
+// Follow the OS while the user has made no explicit choice.
+if (window.matchMedia) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (!document.documentElement.getAttribute("data-theme")) paintThemeButton();
+  });
+}
+paintThemeButton();
+
+// ── source folder ──────────────────────────────────────────────────────────────────
+let canBrowse = true;
+
+function paintSource(info, extra) {
+  $("#srcPath").value = info.path || "";
+  const bits = [];
+  if (!info.exists) bits.push("Folder not found.");
+  else bits.push(`${info.csv_count} CSV file(s) in this folder.`);
+  if (info.is_default) bits.push("This is the default from config.py.");
+  if (extra) bits.push(extra);
+  if (!canBrowse) bits.push("Native folder dialog unavailable - type or paste the path instead.");
+  $("#srcNote").textContent = bits.join(" ");
+}
+
+async function loadSource() {
+  const info = await (await fetch("/api/source")).json();
+  canBrowse = info.can_browse !== false;
+  $("#browse").disabled = !canBrowse;
+  paintSource(info);
+  return info;
+}
+
+async function applySource(path) {
+  const res = await (await fetch("/api/source", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({path})
+  })).json();
+
+  if (!res.ok) { toast("err", "Could not use that folder", res.error); return false; }
+  paintSource(res, res.warning || "");
+  if (res.warning) toast("err", "Folder has no CSV files", res.warning);
+  else toast("ok", "Source folder set", `${res.csv_count} CSV file(s) found. Rescanning…`);
+  await loadFiles(true);
+  return true;
+}
+
+$("#browse").addEventListener("click", async () => {
+  $("#browse").disabled = true;
+  $("#srcNote").textContent = "Waiting for the folder dialog… (it opens on this machine)";
+  try {
+    const res = await (await fetch("/api/browse", {method: "POST"})).json();
+    if (!res.ok) { toast("err", "Could not open the folder dialog", res.error); await loadSource(); return; }
+    if (res.cancelled) { await loadSource(); return; }
+    await applySource(res.path);
+  } finally {
+    $("#browse").disabled = !canBrowse;
+  }
+});
+$("#useSrc").addEventListener("click", () => applySource($("#srcPath").value.trim()));
+$("#srcPath").addEventListener("keydown", e => { if (e.key === "Enter") applySource(e.target.value.trim()); });
+$("#resetSrc").addEventListener("click", async () => {
+  const info = await (await fetch("/api/source")).json();
+  await applySource(info.default);
+});
+
+// ── wiring ─────────────────────────────────────────────────────────────────────────
+$("#env").addEventListener("change", connect);
+$("#confirm").addEventListener("input", refreshStartEnabled);
+$("#all").addEventListener("change", e => {
+  document.querySelectorAll(".pick:not(:disabled)").forEach(c => c.checked = e.target.checked);
+  refreshStartEnabled();
+});
+$("#rescan").addEventListener("click", () => loadFiles(true));
+$("#copy").addEventListener("click", () => navigator.clipboard.writeText(logEl.innerText));
+$("#clear").addEventListener("click", () => logEl.innerHTML = "");
+
+$("#start").addEventListener("click", async () => {
+  const months = [...document.querySelectorAll("#files tbody tr")]
+    .filter(tr => tr.querySelector(".pick")?.checked)
+    .map(tr => tr.dataset.month);
+  if (!months.length) return;
+
+  running = true; refreshStartEnabled();
+  logEl.innerHTML = ""; $("#summaryPanel").style.display = "none"; $("#barFill").style.width = "0";
+
+  const res = await (await fetch("/api/sync", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      environment: $("#env").value,
+      months,
+      batch_rows: Number($("#batch").value),
+      confirm: $("#confirm").value.trim()
+    })
+  })).json();
+
+  if (!res.ok) { running = false; refreshStartEnabled(); toast("err", "Could not start", res.error); }
+});
+
+$("#stop").addEventListener("click", async () => {
+  const ok = confirm(
+    "Stop after the current batch?\n\n"
+    + "The month in flight will be left PARTIALLY loaded. This tool cannot delete, so that "
+    + "month will need its DELETE run by hand before it can be retried."
+  );
+  if (!ok) return;
+  await fetch("/api/stop", {method: "POST"});
+});
+
+(async () => { await loadSource(); await loadEnvMeta(); await connect(); })();
+</script>
+</body>
+</html>

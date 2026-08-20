@@ -1,0 +1,16 @@
+# Real hosts and credentials. NEVER commit this.
+# secrets.example.json is the committed template.
+secrets.local.json
+secrets.*.json
+!secrets.example.json
+
+# Remembers the last-chosen source folder (contains a local path).
+.seeder-state.json
+
+.venv/
+__pycache__/
+*.pyc
+
+# Stray CSV exports, if you drop them next to the app.
+data/
+*.csv

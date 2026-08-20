@@ -1,0 +1,6 @@
+flask==3.1.0
+pymysql==1.1.1
+requests==2.32.3
+# Required, not optional: Windows ships no IANA zone database, so ZoneInfo("Europe/Amsterdam")
+# raises ZoneInfoNotFoundError without this. Every timestamp in this tool depends on it.
+tzdata==2025.1
